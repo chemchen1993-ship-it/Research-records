@@ -51,6 +51,10 @@ Recommended host:
 
 - Render web service with a persistent disk
 
+One-click Render entry:
+
+- [Deploy this repo on Render](https://render.com/deploy?repo=https://github.com/chemchen1993-ship-it/Research-records.git)
+
 ### Render deployment
 
 1. Put this folder in a Git repository.
