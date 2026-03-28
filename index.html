@@ -1,0 +1,183 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <meta name="theme-color" content="#0f172a">
+  <meta name="apple-mobile-web-app-capable" content="yes">
+  <meta name="apple-mobile-web-app-status-bar-style" content="default">
+  <meta name="apple-mobile-web-app-title" content="Research Records">
+  <title>Research Records PWA</title>
+  <link rel="manifest" href="./manifest.webmanifest">
+  <link rel="icon" href="./assets/icon.svg" type="image/svg+xml">
+  <link rel="apple-touch-icon" href="./assets/icon.svg">
+  <link rel="stylesheet" href="./styles.css">
+</head>
+<body>
+  <div class="app-shell">
+    <header class="app-header">
+      <div>
+        <p class="eyebrow">iPad-ready PWA</p>
+        <h1>Research Records</h1>
+        <p class="subhead">A separate web app for iPad with shared sync. Your original desktop app is untouched.</p>
+      </div>
+      <div class="header-actions">
+        <button id="installButton" class="ghost-button" type="button" hidden>Install App</button>
+      </div>
+    </header>
+
+    <div id="iosInstallHint" class="ios-install-hint hidden">
+      Open this page in Safari on iPad, tap Share, then choose <strong>Add to Home Screen</strong>.
+    </div>
+
+    <main class="workspace">
+      <aside class="sidebar card">
+        <section class="sidebar-block">
+          <h2>Search</h2>
+          <input id="searchInput" class="text-input" type="search" placeholder="Search titles, content, tags, projects, or dates">
+        </section>
+
+        <section class="sidebar-actions">
+          <button id="newReportButton" class="primary-button" type="button">New Report</button>
+          <button id="newNoteButton" class="secondary-button" type="button">New Note</button>
+        </section>
+
+        <section class="sidebar-block sidebar-list-block">
+          <div class="sidebar-heading-row">
+            <h2>Records</h2>
+            <span id="recordCountLabel" class="muted-label">0</span>
+          </div>
+          <div id="recordTree" class="record-tree"></div>
+        </section>
+      </aside>
+
+      <section class="editor-panel card">
+        <div class="panel-header">
+          <div>
+            <h2 id="panelTitle">New Record</h2>
+            <p id="panelMeta" class="muted-text">No record selected.</p>
+          </div>
+          <div id="statusBadge" class="status-badge">Ready</div>
+        </div>
+
+        <section class="details-panel">
+          <div class="details-grid">
+            <label class="field-group field-span-2">
+              <span class="field-label">Record Type</span>
+              <div class="type-toggle" role="tablist" aria-label="Record type">
+                <button id="reportTypeButton" class="type-button active" type="button" data-type="experiment_report">Experiment Report</button>
+                <button id="noteTypeButton" class="type-button" type="button" data-type="notes">Notes</button>
+              </div>
+            </label>
+
+            <label id="dateFieldGroup" class="field-group">
+              <span class="field-label">Experiment Date</span>
+              <input id="dateInput" class="text-input" type="date">
+            </label>
+
+            <label class="field-group">
+              <span class="field-label">Project</span>
+              <input id="projectInput" class="text-input" type="text" placeholder="Project name">
+            </label>
+
+            <label class="field-group field-span-2">
+              <span class="field-label">Title</span>
+              <input id="titleInput" class="text-input" type="text" placeholder="Record title">
+            </label>
+
+            <label id="tagsFieldGroup" class="field-group field-span-2">
+              <span class="field-label">Tags</span>
+              <input id="tagsInput" class="text-input" type="text" placeholder="Tags, comma separated">
+            </label>
+          </div>
+        </section>
+
+        <section id="reportToolbar" class="toolbar-row">
+          <div class="toolbar-actions">
+            <button id="insertTableButton" class="secondary-button" type="button">Insert Table</button>
+            <button id="insertInlineImageButton" class="secondary-button" type="button">Insert Inline Image</button>
+          </div>
+          <div class="toolbar-restore">
+            <select id="restoreSectionSelect" class="text-input"></select>
+            <button id="restoreSectionButton" class="secondary-button" type="button">Restore Section</button>
+          </div>
+        </section>
+
+        <section id="notesToolbar" class="toolbar-row hidden">
+          <div class="toolbar-actions">
+            <button id="insertNoteInlineImageButton" class="secondary-button" type="button">Insert Inline Image</button>
+          </div>
+        </section>
+
+        <section id="reportLayout" class="report-layout">
+          <div id="leftSectionColumn" class="section-column"></div>
+          <div id="rightSectionColumn" class="section-column"></div>
+        </section>
+
+        <section id="notesLayout" class="notes-layout hidden">
+          <div class="notes-shell">
+            <div id="notesEditor" class="rich-editor notes-editor" contenteditable="true" spellcheck="true"></div>
+          </div>
+        </section>
+
+        <section class="attachments-panel">
+          <div class="attachments-header">
+            <div>
+              <h3>Attachments</h3>
+              <p class="muted-text">Images, txt/csv, xlsx, pdf, fid, and mpr are supported. Saved files sync through the Research Records sync server.</p>
+            </div>
+            <div class="attachment-actions">
+              <button id="addAttachmentButton" class="secondary-button" type="button">Add Attachment</button>
+              <button id="renameAttachmentButton" class="secondary-button" type="button">Rename</button>
+              <button id="previewAttachmentButton" class="secondary-button" type="button">Preview</button>
+              <button id="downloadAttachmentButton" class="secondary-button" type="button">Download</button>
+              <button id="removeAttachmentButton" class="secondary-button" type="button">Remove</button>
+            </div>
+          </div>
+          <div id="attachmentList" class="attachment-list"></div>
+        </section>
+
+        <footer class="editor-footer">
+          <div class="footer-actions">
+            <button id="saveButton" class="primary-button" type="button">Save Record</button>
+            <button id="exportPdfButton" class="secondary-button" type="button">Export PDF</button>
+            <button id="duplicateButton" class="secondary-button" type="button">Duplicate</button>
+            <button id="versionButton" class="secondary-button" type="button">Version History</button>
+            <button id="deleteButton" class="secondary-button danger" type="button">Delete</button>
+          </div>
+          <p class="muted-text">Auto-save draft runs every 30 seconds. Drafts stay local on this device; saved records sync across devices through the Research Records sync server.</p>
+        </footer>
+      </section>
+    </main>
+  </div>
+
+  <input id="attachmentInput" type="file" hidden multiple>
+  <input id="inlineImageInput" type="file" hidden accept="image/*" multiple>
+  <input id="noteInlineImageInput" type="file" hidden accept="image/*" multiple>
+
+  <dialog id="previewDialog" class="modal">
+    <div class="modal-shell">
+      <div class="modal-header">
+        <h3 id="previewTitle">Attachment Preview</h3>
+        <button id="closePreviewButton" class="ghost-button" type="button">Close</button>
+      </div>
+      <div id="previewBody" class="preview-body"></div>
+    </div>
+  </dialog>
+
+  <dialog id="versionDialog" class="modal">
+    <div class="modal-shell version-shell">
+      <div class="modal-header">
+        <h3>Version History</h3>
+        <button id="closeVersionButton" class="ghost-button" type="button">Close</button>
+      </div>
+      <div class="version-layout">
+        <div id="versionList" class="version-list"></div>
+        <div id="versionPreview" class="version-preview"></div>
+      </div>
+    </div>
+  </dialog>
+
+  <script src="./app.js" type="module"></script>
+</body>
+</html>

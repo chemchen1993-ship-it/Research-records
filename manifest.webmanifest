@@ -1,0 +1,18 @@
+{
+  "name": "Research Records",
+  "short_name": "Records",
+  "description": "An iPad-friendly lab notebook PWA for experiment reports and notes.",
+  "start_url": "./index.html",
+  "scope": "./",
+  "display": "standalone",
+  "background_color": "#f4f6fb",
+  "theme_color": "#0f172a",
+  "icons": [
+    {
+      "src": "./assets/icon.svg",
+      "sizes": "any",
+      "type": "image/svg+xml",
+      "purpose": "any maskable"
+    }
+  ]
+}

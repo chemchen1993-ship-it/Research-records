@@ -1,0 +1,15 @@
+services:
+  - type: web
+    name: research-records-pwa
+    runtime: python
+    plan: starter
+    buildCommand: python -m py_compile sync_server.py
+    startCommand: python sync_server.py
+    healthCheckPath: /api/health
+    envVars:
+      - key: RESEARCH_RECORDS_DATA_DIR
+        value: /var/data/research-records
+    disk:
+      name: research-records-data
+      mountPath: /var/data/research-records
+      sizeGB: 1
