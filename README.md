@@ -10,7 +10,8 @@ This folder contains a separate browser-based iPad app with shared sync. It does
 - Rich text sections with inline image insertion and paste
 - Hide and restore report sections
 - Per-section manual height adjustment with persistence
-- Computer + iPad sync through a Python sync server
+- User registration, sign-in, and sign-out
+- Local cache + cloud database sync through a Python sync server
 - Search and grouped sidebar
 - Save records, duplicate records, delete records
 - Version history on every save
@@ -22,10 +23,10 @@ This folder contains a separate browser-based iPad app with shared sync. It does
 
 - `index.html`: app shell
 - `styles.css`: iPad-friendly UI
-- `app.js`: app logic, local draft storage, and sync client
+- `app.js`: app logic, local cache, auth flow, and sync client
 - `manifest.webmanifest`: PWA manifest
 - `service-worker.js`: offline caching
-- `sync_server.py`: static host + sync API + SQLite storage
+- `sync_server.py`: static host + auth API + sync API + SQLite storage
 - `render.yaml`: internet deployment template for Render
 - `Procfile`: generic process entry for platform deploys
 - `assets/icon.svg`: icon
@@ -41,7 +42,7 @@ Then open:
 
 `http://localhost:8735`
 
-This server also exposes the app on your local network. Use the same server URL on the iPad while both devices are on the same Wi-Fi.
+This server also exposes the app on your local network. Use the same server URL on the iPad while both devices are on the same Wi-Fi, then sign in with the same account on both devices.
 
 ## Internet deployment
 
@@ -66,6 +67,7 @@ One-click Render entry:
    - Persistent disk mount path: `/var/data/research-records`
    - Environment variable: `RESEARCH_RECORDS_DATA_DIR=/var/data/research-records`
 4. After deploy finishes, open the public `https://...onrender.com` URL on both the computer and the iPad.
+5. Create an account once, then sign in with the same email and password on both devices.
 
 ### Installing on iPad after deployment
 
@@ -75,11 +77,13 @@ One-click Render entry:
 
 ## Sync and storage note
 
-Saved records, attachments, and version history are stored in:
+Saved records, attachments, and version history are stored in the cloud-backed sync database:
 
 - `sync_data/research_records_sync.db`
 
-They sync between this computer and iPad through the shared Python sync server.
+When deployed to Render with the included persistent disk, this database becomes the shared cloud source of truth. The browser also keeps a local cache in IndexedDB so previously loaded data returns faster on the same device.
+
+Using the same account on iPad Safari and the computer browser gives you the same saved records after refresh, reload, or reopening the page.
 
 The following items stay local on each device:
 
@@ -88,5 +92,5 @@ The following items stay local on each device:
 
 - Desktop app data is not changed
 - Desktop SQLite data is not automatically imported
-- Desktop browser and iPad browser share saved data only when both use the same sync server
+- Desktop browser and iPad browser share saved data only when both use the same sync server and sign in with the same account
 - If you deploy without a persistent disk, cloud restarts or redeploys can wipe saved records

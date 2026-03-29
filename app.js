@@ -6,6 +6,8 @@ const STORE_DRAFTS = "drafts";
 const STORE_SETTINGS = "settings";
 const AUTOSAVE_DRAFT_KEY = "autosave";
 const LAST_SELECTED_RECORD_KEY = "last-selected-record";
+const AUTH_TOKEN_KEY = "auth-token";
+const SYNC_ACCOUNT_KEY = "sync-account-id";
 const NOTES_EDITOR_KEY = "__notes_body__";
 const ENTRY_TYPE_REPORT = "experiment_report";
 const ENTRY_TYPE_NOTES = "notes";
@@ -46,9 +48,24 @@ const state = {
   selectedAttachmentId: null,
   installPrompt: null,
   previewUrls: [],
+  currentUser: null,
+  authToken: null,
+  syncTimerId: null,
+  syncing: false,
+  saving: false,
 };
 
 const elements = {
+  workspace: document.getElementById("workspace"),
+  authCard: document.getElementById("authCard"),
+  authEmailInput: document.getElementById("authEmailInput"),
+  authPasswordInput: document.getElementById("authPasswordInput"),
+  registerButton: document.getElementById("registerButton"),
+  loginButton: document.getElementById("loginButton"),
+  logoutButton: document.getElementById("logoutButton"),
+  authMessage: document.getElementById("authMessage"),
+  accountPanel: document.getElementById("accountPanel"),
+  accountEmail: document.getElementById("accountEmail"),
   searchInput: document.getElementById("searchInput"),
   recordTree: document.getElementById("recordTree"),
   recordCountLabel: document.getElementById("recordCountLabel"),
@@ -142,37 +159,260 @@ function openDatabase() {
   });
 }
 
-async function dbGetAllRecords() {
+function accountScopedKey(baseKey) {
+  return state.currentUser?.id ? `${baseKey}:${state.currentUser.id}` : baseKey;
+}
+
+function summarizeRecord(record) {
+  const normalized = normalizeRecord(record);
+  return {
+    id: normalized.id,
+    type: normalized.type,
+    title: normalized.title,
+    project: normalized.project,
+    tags: normalized.tags,
+    experimentDate: normalized.experimentDate,
+    createdAt: normalized.createdAt,
+    updatedAt: normalized.updatedAt,
+    searchSummary: String(record?.searchSummary || buildSearchSummary(normalized)),
+    attachmentCount: Number(record?.attachmentCount || normalized.attachments.length) || 0,
+  };
+}
+
+function prepareCachedRecord(record, options = {}) {
+  const normalized = normalizeRecord(record);
+  const summary = summarizeRecord(normalized);
+  return {
+    ...clonePlainRecord(normalized),
+    ...summary,
+    accountId: state.currentUser?.id || null,
+    __summaryOnly: Boolean(options.summaryOnly),
+  };
+}
+
+async function dbDeleteSetting(key) {
+  const tx = state.db.transaction(STORE_SETTINGS, "readwrite");
+  tx.objectStore(STORE_SETTINGS).delete(key);
+  await transactionDone(tx);
+}
+
+async function cacheGetAllRecordEntries(accountId = state.currentUser?.id) {
+  const tx = state.db.transaction(STORE_RECORDS, "readonly");
+  const entries = await requestToPromise(tx.objectStore(STORE_RECORDS).getAll());
+  await transactionDone(tx);
+  return Array.isArray(entries)
+    ? entries.filter((entry) => !entry.accountId || entry.accountId === accountId)
+    : [];
+}
+
+async function cacheGetAllRecords() {
+  const entries = await cacheGetAllRecordEntries();
+  return entries.map((entry) => summarizeRecord(entry));
+}
+
+async function cacheGetRecordEntry(recordId) {
+  const tx = state.db.transaction(STORE_RECORDS, "readonly");
+  const entry = await requestToPromise(tx.objectStore(STORE_RECORDS).get(recordId));
+  await transactionDone(tx);
+  if (!entry) return null;
+  if (entry.accountId && entry.accountId !== state.currentUser?.id) return null;
+  return entry;
+}
+
+async function cachePutRecord(record, options = {}) {
+  const tx = state.db.transaction(STORE_RECORDS, "readwrite");
+  tx.objectStore(STORE_RECORDS).put(prepareCachedRecord(record, options));
+  await transactionDone(tx);
+}
+
+async function cacheReplaceRecordSummaries(summaries) {
+  const existingEntries = await cacheGetAllRecordEntries();
+  const existingById = new Map(existingEntries.map((entry) => [entry.id, entry]));
+  const keepIds = new Set(summaries.map((summary) => summary.id));
+
+  const tx = state.db.transaction(STORE_RECORDS, "readwrite");
+  const store = tx.objectStore(STORE_RECORDS);
+
+  for (const entry of existingEntries) {
+    if (!keepIds.has(entry.id)) {
+      store.delete(entry.id);
+    }
+  }
+
+  for (const summary of summaries) {
+    const existing = existingById.get(summary.id);
+    const canReuseFullRecord = existing && !existing.__summaryOnly && existing.updatedAt === summary.updatedAt;
+    if (canReuseFullRecord) {
+      store.put({
+        ...existing,
+        ...summary,
+        accountId: state.currentUser?.id || null,
+        __summaryOnly: false,
+      });
+      continue;
+    }
+    store.put({
+      ...prepareCachedRecord(summary, { summaryOnly: true }),
+      attachments: [],
+      searchSummary: String(summary.searchSummary || ""),
+      attachmentCount: Number(summary.attachmentCount || 0),
+      __summaryOnly: true,
+    });
+  }
+
+  await transactionDone(tx);
+}
+
+async function cacheDeleteRecord(recordId) {
+  const tx = state.db.transaction([STORE_RECORDS, STORE_VERSIONS], "readwrite");
+  tx.objectStore(STORE_RECORDS).delete(recordId);
+  const versionStore = tx.objectStore(STORE_VERSIONS);
+  const range = IDBKeyRange.only(recordId);
+  const index = versionStore.index("recordId");
+  const request = index.openCursor(range);
+  await new Promise((resolve, reject) => {
+    request.onsuccess = () => {
+      const cursor = request.result;
+      if (!cursor) {
+        resolve();
+        return;
+      }
+      if (!cursor.value.accountId || cursor.value.accountId === state.currentUser?.id) {
+        cursor.delete();
+      }
+      cursor.continue();
+    };
+    request.onerror = () => reject(request.error || new Error("Failed to delete cached versions."));
+  });
+  await transactionDone(tx);
+}
+
+async function cacheGetVersions(recordId) {
+  const tx = state.db.transaction(STORE_VERSIONS, "readonly");
+  const entries = await requestToPromise(tx.objectStore(STORE_VERSIONS).index("recordId").getAll(recordId));
+  await transactionDone(tx);
+  return Array.isArray(entries)
+    ? entries
+        .filter((entry) => !entry.accountId || entry.accountId === state.currentUser?.id)
+        .map((entry) => ({
+          ...entry,
+          snapshot: normalizeRecord(entry.snapshot),
+        }))
+        .sort((a, b) => Number(b.versionNo) - Number(a.versionNo))
+    : [];
+}
+
+async function cachePutVersions(recordId, versions) {
+  const existing = await cacheGetVersions(recordId);
+  const tx = state.db.transaction(STORE_VERSIONS, "readwrite");
+  const store = tx.objectStore(STORE_VERSIONS);
+  for (const version of existing) {
+    store.delete(version.id);
+  }
+  for (const version of versions) {
+    store.put({
+      id: String(version.id),
+      recordId,
+      versionNo: Number(version.versionNo),
+      savedAt: String(version.savedAt),
+      snapshot: clonePlainRecord(version.snapshot),
+      accountId: state.currentUser?.id || null,
+    });
+  }
+  await transactionDone(tx);
+}
+
+async function cacheClearSyncedData(accountId = state.currentUser?.id) {
+  const recordEntries = await cacheGetAllRecordEntries(accountId);
+  const tx = state.db.transaction([STORE_RECORDS, STORE_VERSIONS], "readwrite");
+  const recordStore = tx.objectStore(STORE_RECORDS);
+  const versionStore = tx.objectStore(STORE_VERSIONS);
+  for (const entry of recordEntries) {
+    recordStore.delete(entry.id);
+  }
+  const allVersions = await requestToPromise(versionStore.getAll());
+  for (const entry of allVersions || []) {
+    if (!entry.accountId || entry.accountId === accountId) {
+      versionStore.delete(entry.id);
+    }
+  }
+  await transactionDone(tx);
+}
+
+async function fetchRecordSummariesFromServer() {
   const payload = await apiFetchJson(`${API_BASE}/records`);
-  return Array.isArray(payload?.records) ? payload.records.map(normalizeRecord) : [];
+  return Array.isArray(payload?.records) ? payload.records.map((record) => summarizeRecord(record)) : [];
 }
 
-async function dbGetRecord(recordId) {
+async function fetchRecordFromServer(recordId) {
   const payload = await apiFetchJson(`${API_BASE}/records/${encodeURIComponent(recordId)}`);
-  return deserializeRecordFromApi(payload?.record);
+  const record = deserializeRecordFromApi(payload?.record);
+  await cachePutRecord(record, { summaryOnly: false });
+  return record;
 }
 
-async function dbPutRecord(record) {
-  const payload = await serializeRecordForApi(record);
-  await apiFetchJson(`${API_BASE}/records`, {
-    method: "POST",
-    body: JSON.stringify({ record: payload }),
-  });
-}
-
-async function dbDeleteRecord(recordId) {
-  await apiFetchJson(`${API_BASE}/records/${encodeURIComponent(recordId)}`, {
-    method: "DELETE",
-  });
-}
-
-async function dbGetVersions(recordId) {
+async function fetchVersionsFromServer(recordId) {
   const payload = await apiFetchJson(`${API_BASE}/records/${encodeURIComponent(recordId)}/versions`, { allowNotFound: true });
   const versions = Array.isArray(payload?.versions) ? payload.versions.map((version) => ({
     ...version,
     snapshot: deserializeRecordFromApi(version.snapshot),
   })) : [];
+  await cachePutVersions(recordId, versions);
   return versions.sort((a, b) => Number(b.versionNo) - Number(a.versionNo));
+}
+
+async function dbGetAllRecords() {
+  return cacheGetAllRecords();
+}
+
+async function dbGetRecord(recordId, options = {}) {
+  const cached = await cacheGetRecordEntry(recordId);
+  if (cached && !cached.__summaryOnly && !options.forceRefresh) {
+    return normalizeRecord(cached);
+  }
+  if (!state.currentUser) {
+    if (!cached) {
+      throw new Error("Sign in first.");
+    }
+    return normalizeRecord(cached);
+  }
+  return fetchRecordFromServer(recordId);
+}
+
+async function dbPutRecord(record) {
+  if (!state.currentUser) {
+    throw new Error("Sign in first.");
+  }
+  const payload = await serializeRecordForApi(record);
+  const result = await apiFetchJson(`${API_BASE}/records`, {
+    method: "POST",
+    body: JSON.stringify({ record: payload }),
+  });
+  const savedRecord = deserializeRecordFromApi(result?.record);
+  await cachePutRecord(savedRecord, { summaryOnly: false });
+  await fetchVersionsFromServer(savedRecord.id);
+  return savedRecord;
+}
+
+async function dbDeleteRecord(recordId) {
+  if (!state.currentUser) {
+    throw new Error("Sign in first.");
+  }
+  await apiFetchJson(`${API_BASE}/records/${encodeURIComponent(recordId)}`, {
+    method: "DELETE",
+  });
+  await cacheDeleteRecord(recordId);
+}
+
+async function dbGetVersions(recordId, options = {}) {
+  const cached = await cacheGetVersions(recordId);
+  if (cached.length && !options.forceRefresh) {
+    return cached;
+  }
+  if (!state.currentUser) {
+    return cached;
+  }
+  return fetchVersionsFromServer(recordId);
 }
 
 async function dbPutVersion(version) {
@@ -181,7 +421,7 @@ async function dbPutVersion(version) {
 
 async function dbGetDraft() {
   const tx = state.db.transaction(STORE_DRAFTS, "readonly");
-  const draft = await requestToPromise(tx.objectStore(STORE_DRAFTS).get(AUTOSAVE_DRAFT_KEY));
+  const draft = await requestToPromise(tx.objectStore(STORE_DRAFTS).get(accountScopedKey(AUTOSAVE_DRAFT_KEY)));
   await transactionDone(tx);
   return draft || null;
 }
@@ -189,7 +429,7 @@ async function dbGetDraft() {
 async function dbPutDraft(snapshot) {
   const tx = state.db.transaction(STORE_DRAFTS, "readwrite");
   tx.objectStore(STORE_DRAFTS).put({
-    id: AUTOSAVE_DRAFT_KEY,
+    id: accountScopedKey(AUTOSAVE_DRAFT_KEY),
     savedAt: new Date().toISOString(),
     snapshot: clonePlainRecord(snapshot),
   });
@@ -198,7 +438,7 @@ async function dbPutDraft(snapshot) {
 
 async function dbClearDraft() {
   const tx = state.db.transaction(STORE_DRAFTS, "readwrite");
-  tx.objectStore(STORE_DRAFTS).delete(AUTOSAVE_DRAFT_KEY);
+  tx.objectStore(STORE_DRAFTS).delete(accountScopedKey(AUTOSAVE_DRAFT_KEY));
   await transactionDone(tx);
 }
 
@@ -219,12 +459,14 @@ async function apiFetchJson(url, options = {}) {
   const { allowNotFound = false, ...fetchOptions } = options;
   let response;
   try {
+    const headers = {
+      ...(fetchOptions.body ? { "Content-Type": "application/json" } : {}),
+      ...(state.authToken ? { Authorization: `Bearer ${state.authToken}` } : {}),
+      ...(fetchOptions.headers || {}),
+    };
     response = await fetch(url, {
       cache: "no-store",
-      headers: {
-        "Content-Type": "application/json",
-        ...(fetchOptions.headers || {}),
-      },
+      headers,
       ...fetchOptions,
     });
   } catch (_error) {
@@ -512,6 +754,23 @@ function clearDirty(message = "Ready") {
   setStatus(message, "saved");
 }
 
+function setAuthMessage(message, mode = "info") {
+  elements.authMessage.textContent = message;
+  elements.authMessage.dataset.mode = mode;
+}
+
+function updateAuthShell() {
+  const signedIn = Boolean(state.currentUser);
+  elements.authCard.classList.toggle("hidden", signedIn);
+  elements.workspace.classList.toggle("hidden", !signedIn);
+  elements.accountPanel.classList.toggle("hidden", !signedIn);
+  elements.accountEmail.textContent = state.currentUser?.email || "";
+  if (!signedIn) {
+    elements.recordTree.innerHTML = '<div class="empty-state">Sign in to load your synced records.</div>';
+    elements.recordCountLabel.textContent = "0";
+  }
+}
+
 function buildSearchSummary(record) {
   if (record?.searchSummary) return String(record.searchSummary);
   return record.type === ENTRY_TYPE_NOTES
@@ -570,6 +829,11 @@ function buildRecordButton(record) {
 }
 
 function renderRecordTree() {
+  if (!state.currentUser) {
+    elements.recordCountLabel.textContent = "0";
+    elements.recordTree.innerHTML = '<div class="empty-state">Sign in to load your synced records.</div>';
+    return;
+  }
   const query = elements.searchInput.value.trim().toLowerCase();
   const filtered = sortRecords(state.records).filter((record) => matchesQuery(record, query));
   elements.recordCountLabel.textContent = `${filtered.length}`;
@@ -789,6 +1053,98 @@ function renderEditor() {
     renderReportLayout();
   }
   renderAttachmentList();
+}
+
+function recordHasSavableContent(record) {
+  const summary = buildSearchSummary(record);
+  return Boolean(record.title.trim() || summary.trim() || record.attachments.length);
+}
+
+async function clearClientSession(message = "Signed out.") {
+  const previousAccountId = state.currentUser?.id || await dbGetSetting(SYNC_ACCOUNT_KEY);
+  state.authToken = null;
+  state.currentUser = null;
+  state.records = [];
+  state.currentVersions = [];
+  state.currentRecordPersisted = false;
+  state.selectedAttachmentId = null;
+  if (state.syncTimerId) {
+    window.clearInterval(state.syncTimerId);
+    state.syncTimerId = null;
+  }
+  await dbDeleteSetting(AUTH_TOKEN_KEY);
+  await dbDeleteSetting(SYNC_ACCOUNT_KEY);
+  if (previousAccountId) {
+    await cacheClearSyncedData(previousAccountId);
+  }
+  setCurrentEditorRecord(createEmptyRecord(), [], false);
+  renderEditor();
+  renderRecordTree();
+  updateAuthShell();
+  setAuthMessage(message, "info");
+  clearDirty("Signed out");
+}
+
+async function applyAuthenticatedSession(user, session = null) {
+  const previousAccountId = await dbGetSetting(SYNC_ACCOUNT_KEY);
+  if (session?.token) {
+    state.authToken = session.token;
+    await dbPutSetting(AUTH_TOKEN_KEY, session.token);
+  }
+  if (previousAccountId && previousAccountId !== user.id) {
+    await cacheClearSyncedData(previousAccountId);
+  }
+  state.currentUser = user;
+  await dbPutSetting(SYNC_ACCOUNT_KEY, user.id);
+  updateAuthShell();
+  setAuthMessage(`Signed in as ${user.email}.`, "success");
+  await bootInitialRecord();
+  await syncFromServer({ forceReloadCurrent: true });
+  setupSyncPolling();
+}
+
+async function handleAuthAction(mode) {
+  const email = elements.authEmailInput.value.trim();
+  const password = elements.authPasswordInput.value;
+  if (!email) {
+    setAuthMessage("Enter your email address.", "error");
+    elements.authEmailInput.focus();
+    return;
+  }
+  if (password.length < 8) {
+    setAuthMessage("Password must be at least 8 characters.", "error");
+    elements.authPasswordInput.focus();
+    return;
+  }
+  const button = mode === "register" ? elements.registerButton : elements.loginButton;
+  const originalLabel = button.textContent;
+  button.disabled = true;
+  setAuthMessage(mode === "register" ? "Creating account..." : "Signing in...", "info");
+  try {
+    const payload = await apiFetchJson(`${API_BASE}/auth/${mode}`, {
+      method: "POST",
+      body: JSON.stringify({ email, password }),
+    });
+    elements.authPasswordInput.value = "";
+    await applyAuthenticatedSession(payload.user, payload.session);
+  } catch (error) {
+    setAuthMessage(error?.message || "Authentication failed.", "error");
+  } finally {
+    button.disabled = false;
+    button.textContent = originalLabel;
+  }
+}
+
+async function logoutCurrentUser() {
+  try {
+    await apiFetchJson(`${API_BASE}/auth/logout`, {
+      method: "POST",
+      suppressAuthReset: true,
+    });
+  } catch (_error) {
+    // Ignore network errors during logout; local session still needs to be cleared.
+  }
+  await clearClientSession("Signed out. Sign in again on this or another device anytime.");
 }
 
 function collectCurrentRecordFromDom() {
@@ -1142,27 +1498,49 @@ function exportPdf() {
   }, 500);
 }
 
-async function saveCurrentRecord() {
-  const record = collectCurrentRecordFromDom();
-  const summary = buildSearchSummary(record);
-  if (!record.title && !summary && !record.attachments.length) {
-    window.alert("Enter content or add attachments before saving.");
+async function saveCurrentRecord(options = {}) {
+  if (state.saving) return;
+  if (!state.currentUser) {
+    window.alert("Sign in first so this record can sync to the cloud.");
     return;
   }
+
+  const { silent = false, statusMessage = "Saved" } = options;
+  const record = collectCurrentRecordFromDom();
+  if (!recordHasSavableContent(record)) {
+    if (!silent) {
+      window.alert("Enter content or add attachments before saving.");
+    }
+    return;
+  }
+
   record.updatedAt = new Date().toISOString();
   if (!record.createdAt) record.createdAt = record.updatedAt;
   if (record.type !== ENTRY_TYPE_NOTES && !record.experimentDate) {
     record.experimentDate = todayString();
   }
-  await dbPutRecord(record);
-  await dbPutSetting(LAST_SELECTED_RECORD_KEY, record.id);
-  await dbClearDraft();
-  setCurrentEditorRecord(record, [], true);
-  state.currentVersions = await dbGetVersions(record.id);
-  state.records = await dbGetAllRecords();
-  renderEditor();
-  renderRecordTree();
-  clearDirty("Saved");
+
+  state.saving = true;
+  setStatus(silent ? "Syncing..." : "Saving...", "draft");
+  try {
+    const savedRecord = await dbPutRecord(record);
+    await dbPutSetting(accountScopedKey(LAST_SELECTED_RECORD_KEY), savedRecord.id);
+    await dbClearDraft();
+    const versions = await dbGetVersions(savedRecord.id, { forceRefresh: true });
+    state.records = await dbGetAllRecords();
+    setCurrentEditorRecord(savedRecord, versions, true);
+    renderEditor();
+    renderRecordTree();
+    clearDirty(statusMessage);
+  } catch (error) {
+    setStatus("Sync failed", "error");
+    if (!silent) {
+      window.alert(error?.message || "Failed to save the record.");
+    }
+    throw error;
+  } finally {
+    state.saving = false;
+  }
 }
 
 function duplicateCurrentRecord() {
@@ -1212,7 +1590,7 @@ async function loadRecordIntoEditor(recordId) {
   renderEditor();
   renderRecordTree();
   clearDirty("Loaded");
-  await dbPutSetting(LAST_SELECTED_RECORD_KEY, recordId);
+  await dbPutSetting(accountScopedKey(LAST_SELECTED_RECORD_KEY), recordId);
 }
 
 async function maybeRestoreDraft() {
@@ -1240,7 +1618,7 @@ async function bootInitialRecord() {
     renderRecordTree();
     return;
   }
-  const lastSelected = await dbGetSetting(LAST_SELECTED_RECORD_KEY);
+  const lastSelected = await dbGetSetting(accountScopedKey(LAST_SELECTED_RECORD_KEY));
   const preferred = state.records.find((record) => record.id === lastSelected) || state.records[0] || null;
   if (preferred?.id) {
     const fullRecord = await dbGetRecord(preferred.id);
@@ -1286,54 +1664,66 @@ function setupInstallPrompt() {
 }
 
 async function syncFromServer({ forceReloadCurrent = false } = {}) {
-  const summaries = await dbGetAllRecords();
-  state.records = summaries;
-
-  if (!state.currentRecord) {
-    renderRecordTree();
+  if (!state.currentUser || state.syncing) {
     return;
   }
+  state.syncing = true;
+  try {
+    const summaries = await fetchRecordSummariesFromServer();
+    await cacheReplaceRecordSummaries(summaries);
+    state.records = await dbGetAllRecords();
 
-  if (state.dirty) {
-    renderRecordTree();
-    return;
-  }
-
-  const currentSummary = state.records.find((record) => record.id === state.currentRecord.id);
-  if (!state.currentRecordPersisted) {
-    renderRecordTree();
-    return;
-  }
-
-  if (!currentSummary) {
-    if (state.records.length) {
-      const fallback = await dbGetRecord(state.records[0].id);
-      const versions = await dbGetVersions(fallback.id);
-      setCurrentEditorRecord(fallback, versions, true);
-    } else {
-      setCurrentEditorRecord(createEmptyRecord(), [], false);
+    if (!state.currentRecord) {
+      renderRecordTree();
+      return;
     }
-    renderEditor();
-    renderRecordTree();
-    clearDirty("Synced");
-    return;
-  }
 
-  if (forceReloadCurrent || currentSummary.updatedAt !== state.currentRecord.updatedAt) {
-    const fullRecord = await dbGetRecord(currentSummary.id);
-    const versions = await dbGetVersions(currentSummary.id);
-    setCurrentEditorRecord(fullRecord, versions, true);
-    renderEditor();
-    renderRecordTree();
-    clearDirty(forceReloadCurrent ? "Ready" : "Synced");
-    return;
-  }
+    if (state.dirty) {
+      renderRecordTree();
+      return;
+    }
 
-  renderRecordTree();
+    const currentSummary = state.records.find((record) => record.id === state.currentRecord.id);
+    if (!state.currentRecordPersisted) {
+      renderRecordTree();
+      return;
+    }
+
+    if (!currentSummary) {
+      if (state.records.length) {
+        const fallback = await dbGetRecord(state.records[0].id, { forceRefresh: true });
+        const versions = await dbGetVersions(fallback.id, { forceRefresh: true });
+        setCurrentEditorRecord(fallback, versions, true);
+      } else {
+        setCurrentEditorRecord(createEmptyRecord(), [], false);
+      }
+      renderEditor();
+      renderRecordTree();
+      clearDirty("Synced");
+      return;
+    }
+
+    if (forceReloadCurrent || currentSummary.updatedAt !== state.currentRecord.updatedAt) {
+      const fullRecord = await dbGetRecord(currentSummary.id, { forceRefresh: true });
+      const versions = await dbGetVersions(currentSummary.id, { forceRefresh: true });
+      setCurrentEditorRecord(fullRecord, versions, true);
+      renderEditor();
+      renderRecordTree();
+      clearDirty(forceReloadCurrent ? "Ready" : "Synced");
+      return;
+    }
+
+    renderRecordTree();
+  } finally {
+    state.syncing = false;
+  }
 }
 
 function setupSyncPolling() {
-  window.setInterval(() => {
+  if (state.syncTimerId) {
+    return;
+  }
+  state.syncTimerId = window.setInterval(() => {
     if (document.hidden) return;
     syncFromServer().catch((error) => {
       console.warn("Research Records sync poll failed.", error);
@@ -1352,6 +1742,14 @@ function bindInputs() {
   for (const input of [elements.titleInput, elements.projectInput, elements.tagsInput, elements.dateInput]) {
     input.addEventListener("input", () => markDirty());
   }
+  for (const input of [elements.authEmailInput, elements.authPasswordInput]) {
+    input.addEventListener("keydown", (event) => {
+      if (event.key === "Enter") {
+        event.preventDefault();
+        handleAuthAction("login");
+      }
+    });
+  }
   elements.notesEditor.addEventListener("input", () => markDirty());
   elements.notesEditor.addEventListener("focus", () => {
     state.activeEditorKey = NOTES_EDITOR_KEY;
@@ -1362,6 +1760,9 @@ function bindInputs() {
 }
 
 function bindButtons() {
+  elements.registerButton.addEventListener("click", () => handleAuthAction("register"));
+  elements.loginButton.addEventListener("click", () => handleAuthAction("login"));
+  elements.logoutButton.addEventListener("click", logoutCurrentUser);
   elements.newReportButton.addEventListener("click", () => {
     setCurrentEditorRecord(createEmptyRecord(ENTRY_TYPE_REPORT), [], false);
     renderEditor();
@@ -1415,9 +1816,17 @@ function bindButtons() {
 function setupAutosave() {
   window.setInterval(() => {
     saveDraft(true).catch(() => {});
+    if (state.currentUser && state.dirty && recordHasSavableContent(collectCurrentRecordFromDom())) {
+      saveCurrentRecord({ silent: true, statusMessage: "Synced" }).catch(() => {});
+    }
   }, 30000);
   document.addEventListener("visibilitychange", () => {
-    if (document.hidden) saveDraft(true).catch(() => {});
+    if (document.hidden) {
+      saveDraft(true).catch(() => {});
+      if (state.currentUser && state.dirty && recordHasSavableContent(collectCurrentRecordFromDom())) {
+        saveCurrentRecord({ silent: true, statusMessage: "Synced" }).catch(() => {});
+      }
+    }
   });
   window.addEventListener("beforeunload", (event) => {
     if (!state.dirty) return;
@@ -1434,8 +1843,22 @@ async function init() {
   setupAutosave();
   await registerServiceWorker();
   state.db = await openDatabase();
-  await bootInitialRecord();
-  setupSyncPolling();
+  updateAuthShell();
+  setCurrentEditorRecord(createEmptyRecord(), [], false);
+  renderEditor();
+
+  const savedToken = await dbGetSetting(AUTH_TOKEN_KEY);
+  if (savedToken) {
+    state.authToken = savedToken;
+    try {
+      const payload = await apiFetchJson(`${API_BASE}/auth/me`);
+      await applyAuthenticatedSession(payload.user);
+    } catch (_error) {
+      await clearClientSession("Session expired. Sign in again to continue syncing.");
+    }
+  } else {
+    setAuthMessage("Create an account or sign in with an existing one.", "info");
+  }
 }
 
 init().catch((error) => {

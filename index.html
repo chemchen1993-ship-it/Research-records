@@ -22,6 +22,13 @@
         <p class="subhead">A separate web app for iPad with shared sync. Your original desktop app is untouched.</p>
       </div>
       <div class="header-actions">
+        <div id="accountPanel" class="account-panel hidden">
+          <div class="account-meta">
+            <span class="muted-text">Signed in as</span>
+            <strong id="accountEmail"></strong>
+          </div>
+          <button id="logoutButton" class="secondary-button" type="button">Log Out</button>
+        </div>
         <button id="installButton" class="ghost-button" type="button" hidden>Install App</button>
       </div>
     </header>
@@ -30,7 +37,30 @@
       Open this page in Safari on iPad, tap Share, then choose <strong>Add to Home Screen</strong>.
     </div>
 
-    <main class="workspace">
+    <section id="authCard" class="auth-card card">
+      <div class="auth-copy">
+        <p class="eyebrow">Cloud Sync</p>
+        <h2>Sign in to sync across iPad and computer</h2>
+        <p class="muted-text">Use the same account on both devices. Saved records sync through the cloud database; drafts stay on the current device.</p>
+      </div>
+      <div class="auth-form">
+        <label class="field-group">
+          <span class="field-label">Email</span>
+          <input id="authEmailInput" class="text-input" type="email" inputmode="email" autocomplete="email" placeholder="you@example.com">
+        </label>
+        <label class="field-group">
+          <span class="field-label">Password</span>
+          <input id="authPasswordInput" class="text-input" type="password" autocomplete="current-password" placeholder="At least 8 characters">
+        </label>
+        <div class="auth-actions">
+          <button id="registerButton" class="secondary-button" type="button">Create Account</button>
+          <button id="loginButton" class="primary-button" type="button">Sign In</button>
+        </div>
+        <p id="authMessage" class="auth-message muted-text">Create an account or sign in with an existing one.</p>
+      </div>
+    </section>
+
+    <main id="workspace" class="workspace hidden">
       <aside class="sidebar card">
         <section class="sidebar-block">
           <h2>Search</h2>

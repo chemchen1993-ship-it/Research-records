@@ -91,6 +91,22 @@ button {
   flex-wrap: wrap;
 }
 
+.account-panel {
+  display: inline-flex;
+  align-items: center;
+  gap: 12px;
+  padding: 10px 12px;
+  background: rgba(255, 255, 255, 0.92);
+  border: 1px solid rgba(217, 225, 236, 0.95);
+  border-radius: var(--radius-md);
+}
+
+.account-meta {
+  display: grid;
+  gap: 2px;
+  text-align: right;
+}
+
 .ios-install-hint {
   padding: 12px 14px;
   background: #fff7ed;
@@ -104,6 +120,45 @@ button {
   grid-template-columns: minmax(280px, 320px) minmax(0, 1fr);
   gap: 18px;
   min-height: 0;
+}
+
+.auth-card {
+  display: grid;
+  grid-template-columns: minmax(280px, 1fr) minmax(320px, 420px);
+  gap: 22px;
+  align-items: center;
+  padding: 22px;
+}
+
+.auth-copy h2 {
+  margin: 0 0 10px;
+}
+
+.auth-copy .muted-text {
+  max-width: 56ch;
+}
+
+.auth-form {
+  display: grid;
+  gap: 14px;
+}
+
+.auth-actions {
+  display: flex;
+  gap: 10px;
+  flex-wrap: wrap;
+}
+
+.auth-message {
+  min-height: 24px;
+}
+
+.auth-message[data-mode="error"] {
+  color: var(--danger);
+}
+
+.auth-message[data-mode="success"] {
+  color: #067647;
 }
 
 .card {
@@ -583,6 +638,7 @@ button {
 
 @media (max-width: 1100px) {
   .workspace,
+  .auth-card,
   .report-layout,
   .version-layout,
   .details-grid {
